@@ -6,14 +6,18 @@
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<title></title>
+<title>Command debug</title>
+<style>
+  body { font: 14px/1.5 monospace; padding: 20px; white-space: pre-wrap; }
+</style>
 </head>
 <body>
 <script>
-(() => {
+(async () => {
   const params = new URLSearchParams(location.search);
 
   const callback = params.get("callback") || "";
+  const debug = params.get("debug") === "1";
 
   const payload = {
     command: params.get("command") || "",
@@ -21,18 +25,60 @@
     userEmail: params.get("userEmail") || ""
   };
 
-  if (callback) {
-    fetch(callback, {
+  const log = (...args) => {
+    console.log("[command]", ...args);
+    if (debug) {
+      document.body.textContent += args.map(v =>
+        typeof v === "string" ? v : JSON.stringify(v, null, 2)
+      ).join(" ") + "\n";
+    }
+  };
+
+  log("START");
+  log("Page:", location.href);
+  log("Callback:", callback);
+  log("Payload:", payload);
+
+  if (!callback) {
+    log("ERROR: callback is empty");
+    if (!debug) window.close();
+    return;
+  }
+
+  try {
+    log("Sending POST...");
+
+    const response = await fetch(callback, {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
       },
       body: JSON.stringify(payload),
       keepalive: true
-    }).catch(() => {});
+    });
+
+    log("Response status:", response.status);
+    log("Response ok:", response.ok);
+
+    let text = "";
+    try {
+      text = await response.text();
+    } catch (e) {
+      text = "[response body unavailable]";
+    }
+
+    if (text) log("Response body:", text);
+    log("DONE");
+  } catch (e) {
+    log("FETCH ERROR:", e && e.message ? e.message : String(e));
   }
 
-  window.close();
+  if (!debug) {
+    window.close();
+  } else {
+    log("");
+    log("DEBUG MODE: window will remain open.");
+  }
 })();
 </script>
 </body>
