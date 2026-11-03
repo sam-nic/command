@@ -6,79 +6,109 @@
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<title>Command debug</title>
+<title>Проверка сделки</title>
 <style>
-  body { font: 14px/1.5 monospace; padding: 20px; white-space: pre-wrap; }
+  :root { --bg:#f4f4f4; --card:#fff; --fg:#2f3033; --muted:#7b7e85; --line:#e4e4e6; --accent:#2f6fb6; --bad:#d93d40; --bad-soft:#fdeced; --good:#1a8a30; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#1b1c1f; --card:#242529; --fg:#e6e7ea; --muted:#9a9da5; --line:#34353a; --accent:#6aa5e6; --bad:#ff7a7c; --bad-soft:#3a2227; --good:#4cc26a; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 16px;
+         background: var(--bg); color: var(--fg); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .card { width: min(100%, 460px); background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 22px 24px; box-shadow: 0 8px 30px rgba(0,0,0,.12); }
+  .head { display: flex; align-items: center; gap: 12px; }
+  .icon { width: 34px; height: 34px; flex: none; display: grid; place-items: center; border-radius: 50%; font-size: 18px; font-weight: 700; color: #fff; background: var(--accent); }
+  .icon.spin { background: none; border: 3px solid var(--line); border-top-color: var(--accent); animation: spin .9s linear infinite; }
+  .icon.ok { background: var(--good); }
+  .icon.err { background: var(--bad); }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .icon.spin { animation: none; } }
+  h1 { margin: 0; font-size: 17px; font-weight: 600; }
+  .sub { margin: 10px 0 0; color: var(--muted); }
+  .hint { margin: 12px 0 0; padding: 10px 12px; border-radius: 10px; background: var(--bad-soft); }
+  .detail { margin: 12px 0 0; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); color: var(--muted);
+            font: 12px/1.4 ui-monospace, Menlo, monospace; white-space: pre-wrap; word-break: break-word; max-height: 160px; overflow: auto; }
+  .row { margin-top: 16px; display: flex; gap: 10px; justify-content: flex-end; }
+  button { font: inherit; font-weight: 500; border-radius: 16px; padding: 6px 18px; cursor: pointer; border: 1px solid var(--line); background: var(--card); color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .log { margin-top: 14px; color: var(--muted); font: 12px/1.4 ui-monospace, Menlo, monospace; white-space: pre-wrap; }
 </style>
 </head>
 <body>
+<div class="card" id="card" role="status" aria-live="polite">
+  <div class="head"><div class="icon spin" id="icon"></div><h1 id="title">Запускаю проверку…</h1></div>
+  <p class="sub" id="sub"></p>
+  <div id="extra"></div>
+  <div class="log" id="log" hidden></div>
+</div>
 <script>
 (async () => {
   const params = new URLSearchParams(location.search);
-
   const callback = params.get("callback") || "";
   const debug = params.get("debug") === "1";
+  const payload = { command: params.get("command") || "", task: params.get("task") || "", userEmail: params.get("userEmail") || "" };
+  // адрес статуса проверки: параметр status, для команды checkup — воркер helth-check
+  const statusUrl = params.get("status") || (payload.command === "checkup" ? "https://helth-check.lesha-suschits.workers.dev/status" : "");
 
-  const payload = {
-    command: params.get("command") || "",
-    task: params.get("task") || "",
-    userEmail: params.get("userEmail") || ""
+  const $ = (id) => document.getElementById(id);
+  const logEl = $("log");
+  const log = (...a) => {
+    console.log("[command]", ...a);
+    if (debug) { logEl.hidden = false; logEl.textContent += a.map(v => typeof v === "string" ? v : JSON.stringify(v, null, 2)).join(" ") + "\n"; }
   };
+  const esc = (s) => String(s ?? "").replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 
-  const log = (...args) => {
-    console.log("[command]", ...args);
-    if (debug) {
-      document.body.textContent += args.map(v =>
-        typeof v === "string" ? v : JSON.stringify(v, null, 2)
-      ).join(" ") + "\n";
-    }
-  };
+  function show(kind, title, sub, extraHtml) {
+    $("icon").className = "icon " + kind;
+    $("icon").textContent = kind === "ok" ? "✓" : kind === "err" ? "!" : "";
+    $("title").textContent = title;
+    $("sub").textContent = sub || "";
+    $("extra").innerHTML = extraHtml || "";
+  }
+  function fail(title, hint, detail) {
+    show("err", title, "", (hint ? `<div class="hint">${esc(hint)}</div>` : "") + (detail ? `<div class="detail">${esc(detail)}</div>` : "") +
+      `<div class="row"><button id="close">Закрыть</button><button class="primary" id="retry">Повторить</button></div>`);
+    $("close").onclick = () => window.close();
+    $("retry").onclick = () => location.reload();
+  }
 
-  log("START");
-  log("Page:", location.href);
-  log("Callback:", callback);
-  log("Payload:", payload);
+  log("START", location.href, payload);
+  if (!callback) { fail("Не указан адрес вебхука", "В ссылке нет параметра callback.", ""); return; }
 
-  if (!callback) {
-    log("ERROR: callback is empty");
+  const t0 = Date.now();
+  try {
+    show("spin", "Запускаю проверку…", "Отправляю команду в Planfix.");
+    const response = await fetch(callback, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload), keepalive: true });
+    let text = ""; try { text = await response.text(); } catch { text = ""; }
+    log("Webhook status:", response.status, text);
+    if (!response.ok) { fail("Planfix не принял команду", "Вебхук ответил ошибкой. Проверьте сценарий «command» в Planfix.", `HTTP ${response.status}\n${text.slice(0, 400)}`); return; }
+  } catch (e) {
+    fail("Нет связи с Planfix", "Команда не отправлена. Проверьте интернет и повторите.", e && e.message ? e.message : String(e));
+    return;
+  }
+
+  if (!statusUrl) { // универсальная команда без статуса: как раньше, закрываем окно
     if (!debug) window.close();
     return;
   }
 
-  try {
-    log("Sending POST...");
-
-    const response = await fetch(callback, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(payload),
-      keepalive: true
-    });
-
-    log("Response status:", response.status);
-    log("Response ok:", response.ok);
-
-    let text = "";
+  show("spin", "Идёт проверка…", "Анализ обычно занимает до минуты.");
+  const deadline = Date.now() + 150000;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 2500));
+    let s = null;
     try {
-      text = await response.text();
-    } catch (e) {
-      text = "[response body unavailable]";
+      const r = await fetch(`${statusUrl}?task=${encodeURIComponent(payload.task)}&after=${t0}`, { cache: "no-store" });
+      s = await r.json();
+    } catch (e) { log("status error", e && e.message); continue; }
+    log("status", s);
+    if (s.state === "running") show("spin", "Идёт анализ…", "Читаю комментарии и считаю оценку.");
+    if (s.state === "ok") {
+      show("ok", "Готово", "Карточка сделки обновлена.");
+      if (!debug) setTimeout(() => window.close(), 1500);
+      return;
     }
-
-    if (text) log("Response body:", text);
-    log("DONE");
-  } catch (e) {
-    log("FETCH ERROR:", e && e.message ? e.message : String(e));
+    if (s.state === "error") { fail(s.title || "Проверка не выполнилась", s.hint, s.detail); return; }
   }
-
-  if (!debug) {
-    window.close();
-  } else {
-    log("");
-    log("DEBUG MODE: window will remain open.");
-  }
+  fail("Нет ответа от сервиса проверки", "За 2,5 минуты результат не пришёл. Возможно, сценарий Planfix не вызвал сервис или сервис недоступен.", `Задача ${payload.task}`);
 })();
 </script>
 </body>
