@@ -29,6 +29,12 @@
   .row { margin-top: 16px; display: flex; gap: 10px; justify-content: flex-end; }
   button { font: inherit; font-weight: 500; border-radius: 16px; padding: 6px 18px; cursor: pointer; border: 1px solid var(--line); background: var(--card); color: var(--accent); }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .steps { list-style: none; margin: 14px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; color: var(--muted); }
+  .steps li::before { content: "○"; display: inline-block; width: 22px; }
+  .steps li.run { color: var(--fg); font-weight: 600; }
+  .steps li.run::before { content: "◔"; color: var(--accent); }
+  .steps li.done { color: var(--fg); }
+  .steps li.done::before { content: "✓"; color: var(--good); font-weight: 700; }
   .log { margin-top: 14px; color: var(--muted); font: 12px/1.4 ui-monospace, Menlo, monospace; white-space: pre-wrap; }
 </style>
 </head>
@@ -36,6 +42,7 @@
 <div class="card" id="card" role="status" aria-live="polite">
   <div class="head"><div class="icon spin" id="icon"></div><h1 id="title">Запускаю проверку…</h1></div>
   <p class="sub" id="sub"></p>
+  <ul class="steps" id="steps" hidden><li id="s1">Команда отправлена в Planfix</li><li id="s2">Planfix запускает анализ</li><li id="s3">Анализ сделки</li></ul>
   <div id="extra"></div>
   <div class="log" id="log" hidden></div>
 </div>
@@ -61,6 +68,7 @@
     $("icon").textContent = kind === "ok" ? "✓" : kind === "err" ? "!" : "";
     $("title").textContent = title;
     $("sub").textContent = sub || "";
+    if (kind !== "spin") $("steps").hidden = true;
     $("extra").innerHTML = extraHtml || "";
   }
   function fail(title, hint, detail) {
@@ -90,17 +98,25 @@
     return;
   }
 
-  show("spin", "Идёт проверка…", "Анализ обычно занимает до минуты.");
+  // этапы ожидания: после отправки Planfix сам запускает сценарий (обычно 30-60 с), затем идёт анализ
+  const setSteps = (n) => { // n: 2 = ждём Planfix, 3 = идёт анализ
+    $("steps").hidden = false;
+    ["s1", "s2", "s3"].forEach((id, i) => { $(id).className = i + 1 < n ? "done" : i + 1 === n ? "run" : ""; });
+  };
+  const tick = () => { $("sub").textContent = `Прошло ${Math.round((Date.now() - t0) / 1000)} с. Обычно проверка занимает до двух минут.`; };
+  show("spin", "Идёт проверка…", "");
+  setSteps(2); tick();
   const deadline = Date.now() + 150000;
   while (Date.now() < deadline) {
     await new Promise(r => setTimeout(r, 2500));
+    tick();
     let s = null;
     try {
       const r = await fetch(`${statusUrl}?task=${encodeURIComponent(payload.task)}&after=${t0}`, { cache: "no-store" });
       s = await r.json();
     } catch (e) { log("status error", e && e.message); continue; }
     log("status", s);
-    if (s.state === "running") show("spin", "Идёт анализ…", "Читаю комментарии и считаю оценку.");
+    if (s.state === "running") { $("title").textContent = "Идёт анализ…"; setSteps(3); }
     if (s.state === "ok") {
       show("ok", "Готово", "Карточка сделки обновлена.");
       if (!debug) setTimeout(() => window.close(), 1500);
