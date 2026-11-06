@@ -82,6 +82,14 @@
   if (!callback) { fail("Не указан адрес вебхука", "В ссылке нет параметра callback.", ""); return; }
 
   const t0 = Date.now();
+  const base = statusUrl ? statusUrl.replace(/\/status$/, "") : "";
+  const polls = [];
+  // нажатие регистрируем в воркере: он сам заведёт тикет, если Planfix вызовет проверку слишком поздно или не вызовет вовсе
+  if (base) { try { fetch(base + "/click", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ task: payload.task, t0, email: payload.userEmail }), keepalive: true }); } catch {} }
+  const report = (kind, reason, elapsed) => {
+    if (!base) return;
+    try { fetch(base + "/report", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ task: payload.task, t0, kind, reason, elapsed_s: elapsed, polls: polls.slice(-12).join("; ") }), keepalive: true }); } catch {}
+  };
   try {
     show("spin", "Запускаю проверку…", "Отправляю команду в Planfix.");
     const response = await fetch(callback, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload), keepalive: true });
@@ -107,11 +115,11 @@
     const sec = Math.round((Date.now() - t0) / 1000);
     $("sub").textContent = sec < 120
       ? `Прошло ${sec} с. Обычно проверка занимает до двух минут.`
-      : `Прошло ${sec} с. Planfix запускает сценарий дольше обычного. Окно можно закрыть: результат запишется в карточку сам.`;
+      : `Прошло ${sec} с. Planfix запускает сценарий дольше обычного.`;
   };
   show("spin", "Идёт проверка…", "");
   setSteps(2); tick();
-  const deadline = Date.now() + 420000; // Planfix иногда запускает сценарий дольше двух минут
+  const deadline = Date.now() + 150000; // дольше 2,5 минут: считаем сбоем и сообщаем администратору
   while (Date.now() < deadline) {
     await new Promise(r => setTimeout(r, Date.now() - t0 < 30000 ? 2500 : 5000));
     tick();
@@ -121,6 +129,7 @@
       s = await r.json();
     } catch (e) { log("status error", e && e.message); continue; }
     log("status", s);
+    polls.push(`${Math.round((Date.now() - t0) / 1000)}с:${s.state}`);
     if (s.state === "running") { $("title").textContent = "Идёт анализ…"; setSteps(3); }
     if (s.state === "ok") {
       show("ok", "Готово", "Карточка сделки обновлена.");
@@ -129,7 +138,9 @@
     }
     if (s.state === "error") { fail(s.title || "Проверка не выполнилась", s.hint, s.detail); return; }
   }
-  fail("Проверка не запустилась", "За 7 минут Planfix так и не вызвал сервис проверки. Скорее всего, сценарий Planfix завис или не запустился. Нажмите «Повторить»; если повторяется, сообщите администратору.", `Задача ${payload.task}`);
+  const elapsed = Math.round((Date.now() - t0) / 1000);
+  report("timeout", `нет ответа сервиса за ${elapsed} с`, elapsed);
+  fail("Проверка идёт слишком долго", "За 2,5 минуты результат не пришёл. Администратору автоматически отправлен подробный отчёт. Нажмите «Повторить» или подождите: карточка может обновиться чуть позже.", `Задача ${payload.task}, прошло ${elapsed} с`);
 })();
 </script>
 </body>
