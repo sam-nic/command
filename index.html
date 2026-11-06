@@ -103,12 +103,17 @@
     $("steps").hidden = false;
     ["s1", "s2", "s3"].forEach((id, i) => { $(id).className = i + 1 < n ? "done" : i + 1 === n ? "run" : ""; });
   };
-  const tick = () => { $("sub").textContent = `Прошло ${Math.round((Date.now() - t0) / 1000)} с. Обычно проверка занимает до двух минут.`; };
+  const tick = () => {
+    const sec = Math.round((Date.now() - t0) / 1000);
+    $("sub").textContent = sec < 120
+      ? `Прошло ${sec} с. Обычно проверка занимает до двух минут.`
+      : `Прошло ${sec} с. Planfix запускает сценарий дольше обычного. Окно можно закрыть: результат запишется в карточку сам.`;
+  };
   show("spin", "Идёт проверка…", "");
   setSteps(2); tick();
-  const deadline = Date.now() + 150000;
+  const deadline = Date.now() + 420000; // Planfix иногда запускает сценарий дольше двух минут
   while (Date.now() < deadline) {
-    await new Promise(r => setTimeout(r, 2500));
+    await new Promise(r => setTimeout(r, Date.now() - t0 < 30000 ? 2500 : 5000));
     tick();
     let s = null;
     try {
@@ -124,7 +129,7 @@
     }
     if (s.state === "error") { fail(s.title || "Проверка не выполнилась", s.hint, s.detail); return; }
   }
-  fail("Нет ответа от сервиса проверки", "За 2,5 минуты результат не пришёл. Возможно, сценарий Planfix не вызвал сервис или сервис недоступен.", `Задача ${payload.task}`);
+  fail("Проверка не запустилась", "За 7 минут Planfix так и не вызвал сервис проверки. Скорее всего, сценарий Planfix завис или не запустился. Нажмите «Повторить»; если повторяется, сообщите администратору.", `Задача ${payload.task}`);
 })();
 </script>
 </body>
