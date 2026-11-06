@@ -86,9 +86,15 @@
   const polls = [];
   // нажатие регистрируем в воркере: он сам заведёт тикет, если Planfix вызовет проверку слишком поздно или не вызовет вовсе
   if (base) { try { fetch(base + "/click", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ task: payload.task, t0, email: payload.userEmail }), keepalive: true }); } catch {} }
-  const report = (kind, reason, elapsed) => {
-    if (!base) return;
-    try { fetch(base + "/report", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ task: payload.task, t0, kind, reason, elapsed_s: elapsed, polls: polls.slice(-12).join("; ") }), keepalive: true }); } catch {}
+  // отправляет подробный отчёт воркеру; воркер заводит тикет интегратору. Ждём ответ до 10 с, чтобы честно показать результат.
+  const report = async (kind, reason, elapsed) => {
+    if (!base) return null;
+    try {
+      const ctl = new AbortController(); const timer = setTimeout(() => ctl.abort(), 10000);
+      const r = await fetch(base + "/report", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ task: payload.task, t0, kind, reason, elapsed_s: elapsed, polls: polls.slice(-12).join("; ") }), signal: ctl.signal });
+      clearTimeout(timer);
+      return await r.json();
+    } catch { return null; }
   };
   try {
     show("spin", "Запускаю проверку…", "Отправляю команду в Planfix.");
@@ -139,8 +145,12 @@
     if (s.state === "error") { fail(s.title || "Проверка не выполнилась", s.hint, s.detail); return; }
   }
   const elapsed = Math.round((Date.now() - t0) / 1000);
-  report("timeout", `нет ответа сервиса за ${elapsed} с`, elapsed);
-  fail("Проверка идёт слишком долго", "За 2,5 минуты результат не пришёл. Администратору автоматически отправлен подробный отчёт. Нажмите «Повторить» или подождите: карточка может обновиться чуть позже.", `Задача ${payload.task}, прошло ${elapsed} с`);
+  show("spin", "Проверка идёт слишком долго", "Отправляю подробный отчёт интегратору…");
+  const rep = await report("timeout", `нет ответа сервиса за ${elapsed} с`, elapsed);
+  const sent = rep && (rep.ticket || rep.skipped === "уже заведён");
+  fail("Проверка идёт слишком долго",
+    "За 2,5 минуты результат не пришёл. " + (sent ? "Тикет направлен интегратору. " : "Не удалось создать тикет автоматически: сообщите интегратору номер задачи. ") + "Нажмите «Повторить» или подождите: карточка может обновиться чуть позже.",
+    `Задача ${payload.task}, прошло ${elapsed} с` + (rep && rep.ticket ? `\nТикет: ${rep.ticket}` : ""));
 })();
 </script>
 </body>
