@@ -29,6 +29,7 @@
   .row { margin-top: 16px; display: flex; gap: 10px; justify-content: flex-end; }
   button { font: inherit; font-weight: 500; border-radius: 16px; padding: 6px 18px; cursor: pointer; border: 1px solid var(--line); background: var(--card); color: var(--accent); }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .card[hidden] { display: none; }
   .steps { list-style: none; margin: 14px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; color: var(--muted); }
   .steps li::before { content: "○"; display: inline-block; width: 22px; }
   .steps li.run { color: var(--fg); font-weight: 600; }
@@ -40,7 +41,7 @@
 </head>
 <body>
 <div class="card" id="card" role="status" aria-live="polite">
-  <div class="head"><div class="icon spin" id="icon"></div><h1 id="title">Отправляю…</h1></div>
+  <div class="head"><div class="icon spin" id="icon"></div><h1 id="title">Запускаю проверку…</h1></div>
   <p class="sub" id="sub"></p>
   <ul class="steps" id="steps" hidden><li id="s1">Команда отправлена в Planfix</li><li id="s2">Planfix запускает анализ</li><li id="s3">Анализ сделки</li></ul>
   <div id="extra"></div>
@@ -81,20 +82,95 @@
   log("START", location.href, payload);
   if (!callback) { fail("Не указан адрес вебхука", "В ссылке нет параметра callback.", ""); return; }
 
+  // обычная команда (не checkup): уходит в фоне, окно не показываем и закрываем сразу.
+  // Окно появится только при мгновенной ошибке (нет связи, вебхук ответил отказом).
+  if (!statusUrl) {
+    $("card").hidden = true;
+    const sentQuick = fetch(callback, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload), keepalive: true })
+      .then(async (r) => ({ ok: r.ok, status: r.status, text: await r.text().catch(() => "") }))
+      .catch((e) => ({ err: e }));
+    const first = await Promise.race([sentQuick, new Promise((r) => setTimeout(() => r(null), 600))]);
+    log("Webhook (first 600 ms):", first);
+    if (first && (first.err || !first.ok)) {
+      $("card").hidden = false;
+      if (first.err) fail("Нет связи с Planfix", "Команда не отправлена. Проверьте интернет и повторите.", first.err && first.err.message ? first.err.message : String(first.err));
+      else fail("Planfix не принял команду", "Вебхук ответил ошибкой. Проверьте сценарий «command» в Planfix.", `HTTP ${first.status}\n${first.text.slice(0, 400)}`);
+      return;
+    }
+    if (!debug) window.close();
+    return;
+  }
+
   const t0 = Date.now();
   const base = statusUrl ? statusUrl.replace(/\/status$/, "") : "";
+  const polls = [];
   // нажатие регистрируем в воркере: он сам заведёт тикет, если Planfix вызовет проверку слишком поздно или не вызовет вовсе
   if (base) { try { fetch(base + "/click", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ task: payload.task, t0, email: payload.userEmail }), keepalive: true }); } catch {} }
-  // команда уходит в фоне (keepalive): окно закрываем сразу, ход выполнения не показываем.
-  // Ошибку показываем только если она пришла мгновенно (нет связи, вебхук ответил отказом).
-  const sent = fetch(callback, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload), keepalive: true })
-    .then(async (r) => ({ ok: r.ok, status: r.status, text: await r.text().catch(() => "") }))
-    .catch((e) => ({ err: e }));
-  const first = await Promise.race([sent, new Promise((r) => setTimeout(() => r(null), 600))]);
-  log("Webhook (first 600 ms):", first);
-  if (first && first.err) { fail("Нет связи с Planfix", "Команда не отправлена. Проверьте интернет и повторите.", first.err && first.err.message ? first.err.message : String(first.err)); return; }
-  if (first && !first.ok) { fail("Planfix не принял команду", "Вебхук ответил ошибкой. Проверьте сценарий «command» в Planfix.", `HTTP ${first.status}\n${first.text.slice(0, 400)}`); return; }
-  if (!debug) window.close();
+  // отправляет подробный отчёт воркеру; воркер заводит тикет интегратору. Ждём ответ до 10 с, чтобы честно показать результат.
+  const report = async (kind, reason, elapsed) => {
+    if (!base) return null;
+    try {
+      const ctl = new AbortController(); const timer = setTimeout(() => ctl.abort(), 10000);
+      const r = await fetch(base + "/report", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ task: payload.task, t0, kind, reason, elapsed_s: elapsed, polls: polls.slice(-12).join("; ") }), signal: ctl.signal });
+      clearTimeout(timer);
+      return await r.json();
+    } catch { return null; }
+  };
+  try {
+    show("spin", "Запускаю проверку…", "Отправляю команду в Planfix.");
+    const response = await fetch(callback, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload), keepalive: true });
+    let text = ""; try { text = await response.text(); } catch { text = ""; }
+    log("Webhook status:", response.status, text);
+    if (!response.ok) { fail("Planfix не принял команду", "Вебхук ответил ошибкой. Проверьте сценарий «command» в Planfix.", `HTTP ${response.status}\n${text.slice(0, 400)}`); return; }
+  } catch (e) {
+    fail("Нет связи с Planfix", "Команда не отправлена. Проверьте интернет и повторите.", e && e.message ? e.message : String(e));
+    return;
+  }
+
+  if (!statusUrl) { // универсальная команда без статуса: как раньше, закрываем окно
+    if (!debug) window.close();
+    return;
+  }
+
+  // этапы ожидания: после отправки Planfix сам запускает сценарий (обычно 30-60 с), затем идёт анализ
+  const setSteps = (n) => { // n: 2 = ждём Planfix, 3 = идёт анализ
+    $("steps").hidden = false;
+    ["s1", "s2", "s3"].forEach((id, i) => { $(id).className = i + 1 < n ? "done" : i + 1 === n ? "run" : ""; });
+  };
+  const tick = () => {
+    const sec = Math.round((Date.now() - t0) / 1000);
+    $("sub").textContent = sec < 120
+      ? `Прошло ${sec} с. Обычно проверка занимает до двух минут.`
+      : `Прошло ${sec} с. Planfix запускает сценарий дольше обычного.`;
+  };
+  show("spin", "Идёт проверка…", "");
+  setSteps(2); tick();
+  const deadline = Date.now() + 150000; // дольше 2,5 минут: считаем сбоем и сообщаем администратору
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, Date.now() - t0 < 30000 ? 2500 : 5000));
+    tick();
+    let s = null;
+    try {
+      const r = await fetch(`${statusUrl}?task=${encodeURIComponent(payload.task)}&after=${t0}`, { cache: "no-store" });
+      s = await r.json();
+    } catch (e) { log("status error", e && e.message); continue; }
+    log("status", s);
+    polls.push(`${Math.round((Date.now() - t0) / 1000)}с:${s.state}`);
+    if (s.state === "running") { $("title").textContent = "Идёт анализ…"; setSteps(3); }
+    if (s.state === "ok") {
+      show("ok", "Готово", "Карточка сделки обновлена.");
+      if (!debug) setTimeout(() => window.close(), 1500);
+      return;
+    }
+    if (s.state === "error") { fail(s.title || "Проверка не выполнилась", s.hint, s.detail); return; }
+  }
+  const elapsed = Math.round((Date.now() - t0) / 1000);
+  show("spin", "Проверка идёт слишком долго", "Отправляю подробный отчёт интегратору…");
+  const rep = await report("timeout", `нет ответа сервиса за ${elapsed} с`, elapsed);
+  const sent = rep && (rep.ticket || rep.skipped === "уже заведён");
+  fail("Проверка идёт слишком долго",
+    "За 2,5 минуты результат не пришёл. " + (sent ? "Тикет направлен интегратору. " : "Не удалось создать тикет автоматически: сообщите интегратору номер задачи. ") + "Нажмите «Повторить» или подождите: карточка может обновиться чуть позже.",
+    `Задача ${payload.task}, прошло ${elapsed} с` + (rep && rep.ticket ? `\nТикет: ${rep.ticket}` : ""));
 })();
 </script>
 </body>
