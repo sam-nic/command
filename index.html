@@ -143,6 +143,12 @@
       ? `Прошло ${sec} с. Обычно проверка занимает до двух минут.`
       : `Прошло ${sec} с. Planfix запускает сценарий дольше обычного.`;
   };
+  // запрос статуса с таймаутом: сеть пользователя до воркера бывает нестабильной, зависший запрос не должен останавливать опрос
+  const getJson = async (url, ms) => {
+    const ctl = new AbortController(); const timer = setTimeout(() => ctl.abort(), ms);
+    try { const r = await fetch(url, { cache: "no-store", signal: ctl.signal }); return await r.json(); } finally { clearTimeout(timer); }
+  };
+  const statusNow = (after) => getJson(`${statusUrl}?task=${encodeURIComponent(payload.task)}&after=${after}`, 6000);
   show("spin", "Идёт проверка…", "");
   setSteps(2); tick();
   const deadline = Date.now() + 150000; // дольше 2,5 минут: считаем сбоем и сообщаем администратору
@@ -151,9 +157,8 @@
     tick();
     let s = null;
     try {
-      const r = await fetch(`${statusUrl}?task=${encodeURIComponent(payload.task)}&after=${t0}`, { cache: "no-store" });
-      s = await r.json();
-    } catch (e) { log("status error", e && e.message); continue; }
+      s = await statusNow(t0);
+    } catch (e) { log("status error", e && e.message); polls.push(`${Math.round((Date.now() - t0) / 1000)}с:нет связи`); continue; }
     log("status", s);
     polls.push(`${Math.round((Date.now() - t0) / 1000)}с:${s.state}`);
     if (s.state === "running") { $("title").textContent = "Идёт анализ…"; setSteps(3); }
@@ -165,8 +170,15 @@
     if (s.state === "error") { fail(s.title || "Проверка не выполнилась", s.hint, s.detail); return; }
   }
   const elapsed = Math.round((Date.now() - t0) / 1000);
+  // последняя проверка: возможно, анализ давно выполнен, а страница просто не дозвалась до статуса
+  try {
+    const fin = await statusNow(t0);
+    if (fin.state === "ok") { show("ok", "Готово", "Карточка сделки обновлена."); if (!debug) setTimeout(() => window.close(), 1500); return; }
+    if (fin.state === "error") { fail(fin.title || "Проверка не выполнилась", fin.hint, fin.detail); return; }
+  } catch {}
   show("spin", "Проверка идёт слишком долго", "Отправляю подробный отчёт интегратору…");
   const rep = await report("timeout", `нет ответа сервиса за ${elapsed} с`, elapsed);
+  if (rep && rep.skipped === "проверка выполнена успешно") { show("ok", "Готово", "Карточка сделки обновлена."); if (!debug) setTimeout(() => window.close(), 1500); return; }
   const sent = rep && (rep.ticket || rep.skipped === "уже заведён");
   fail("Проверка идёт слишком долго",
     "За 2,5 минуты результат не пришёл. " + (sent ? "Тикет направлен интегратору. " : "Не удалось создать тикет автоматически: сообщите интегратору номер задачи. ") + "Нажмите «Повторить» или подождите: карточка может обновиться чуть позже.",
